@@ -20,3 +20,7 @@ torch
 ftfy
 regex
 open-clip-torch
+umap-learn
+
+python-dotenv
+json-repair

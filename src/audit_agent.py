@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 
 _GEMINI_CLIENT = None
 
+try:
+    from json_repair import repair_json
+except Exception:  # pragma: no cover - optional fallback dependency
+    repair_json = None
+
 
 AUDIT_RESPONSE_JSON_SCHEMA = {
     "type": "object",
@@ -95,6 +100,85 @@ def _clean_json_text(text):
     return cleaned.strip()
 
 
+def _extract_first_json_object(text):
+    """
+    Extract the first balanced JSON object from a text blob.
+    """
+    if not text:
+        return text
+
+    start = text.find("{")
+    if start < 0:
+        return text
+
+    depth = 0
+    in_string = False
+    escaped = False
+
+    for i in range(start, len(text)):
+        ch = text[i]
+
+        if escaped:
+            escaped = False
+            continue
+
+        if ch == "\\" and in_string:
+            escaped = True
+            continue
+
+        if ch == '"':
+            in_string = not in_string
+            continue
+
+        if in_string:
+            continue
+
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+
+    return text[start:]
+
+
+def _loads_json_robust(text):
+    """
+    Parse JSON with safe fallbacks for malformed model outputs.
+    """
+    cleaned = _clean_json_text(text)
+    if not cleaned:
+        raise ValueError("Gemini returned an empty response")
+
+    candidates = [cleaned]
+    extracted = _extract_first_json_object(cleaned)
+    if extracted and extracted != cleaned:
+        candidates.append(extracted)
+
+    last_error = None
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as e:
+            last_error = e
+
+    if repair_json is not None:
+        # Last-resort repair for minor JSON formatting issues such as
+        # unescaped quotes or trailing commas.
+        for candidate in candidates:
+            try:
+                repaired = repair_json(candidate, return_objects=True)
+                if isinstance(repaired, dict):
+                    return repaired
+            except Exception:
+                pass
+
+    if last_error is not None:
+        raise last_error
+    raise ValueError("Could not parse Gemini response as JSON")
+
+
 def _build_image_part(image_path):
     with open(image_path, "rb") as f:
         image_bytes = f.read()
@@ -114,17 +198,42 @@ def _parse_gemini_response(response):
     if parsed is not None:
         # Some schemas may produce non-dict parsed output
         if isinstance(parsed, str):
-            return json.loads(_clean_json_text(parsed))
+            return _loads_json_robust(parsed)
         return parsed
 
-    text = _clean_json_text(getattr(response, "text", ""))
-    if not text:
-        raise ValueError("Gemini returned an empty response")
-
-    return json.loads(text)
+    return _loads_json_robust(getattr(response, "text", ""))
 
 
-def audit_single_image(image_path, model_name="gemini-2.5-flash"):
+def _normalize_audit_result(result):
+    if not isinstance(result, dict):
+        raise ValueError(f"Expected dict result, got {type(result)}")
+
+    normalized = dict(result)
+    normalized["scene_type"] = str(normalized.get("scene_type", "unknown"))
+
+    overall = normalized.get("overall_accessible", False)
+    if isinstance(overall, str):
+        value = overall.strip().lower()
+        overall = value in {"true", "1", "yes", "accessible", "compliant"}
+    normalized["overall_accessible"] = bool(overall)
+
+    score = normalized.get("accessibility_score")
+    if score is not None:
+        try:
+            score = float(score)
+        except Exception:
+            score = None
+    normalized["accessibility_score"] = score
+
+    issues = normalized.get("issues")
+    if not isinstance(issues, list):
+        issues = []
+    normalized["issues"] = issues
+
+    return normalized
+
+
+def audit_single_image(image_path, model_name="gemini-3-flash-preview"):
     """
     Send a single image to Gemini for accessibility audit.
 
@@ -143,25 +252,23 @@ def audit_single_image(image_path, model_name="gemini-2.5-flash"):
             model=model_name,
             contents=[ACCESSIBILITY_AUDIT_PROMPT, image_part],
             config=types.GenerateContentConfig(
-                temperature=0.1,
-                max_output_tokens=2048,
+                temperature=0.0,
+                max_output_tokens=4096,
                 response_mime_type="application/json",
-                response_json_schema=AUDIT_RESPONSE_JSON_SCHEMA,
+                response_schema=AUDIT_RESPONSE_JSON_SCHEMA,
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                    disable=True
+                ),
             ),
         )
 
         result = _parse_gemini_response(response)
-        if not isinstance(result, dict):
-            raise ValueError(f"Expected dict result, got {type(result)}")
-
-        issues = result.get("issues")
-        if not isinstance(issues, list):
-            result["issues"] = []
-
-        return result
+        return _normalize_audit_result(result)
 
     except json.JSONDecodeError as e:
-        logger.warning(f"Failed to parse JSON for {image_path}: {e}")
+        raw_text = _clean_json_text(getattr(locals().get("response"), "text", ""))
+        snippet = raw_text[:240].replace("\n", " ")
+        logger.warning(f"Failed to parse JSON for {image_path}: {e} | snippet={snippet!r}")
         return None
     except Exception as e:
         logger.warning(f"Error auditing {image_path}: {e}")
@@ -170,7 +277,7 @@ def audit_single_image(image_path, model_name="gemini-2.5-flash"):
 
 def audit_dataset(
     dataset,
-    model_name="gemini-2.5-flash",
+    model_name="gemini-3-flash-preview",
     max_samples=None,
     delay_between_calls=0.5,
 ):

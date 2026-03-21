@@ -30,7 +30,12 @@ import argparse
 import logging
 import sys
 import os
+import re
+from pathlib import Path
+from dotenv import load_dotenv
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(dotenv_path=PROJECT_ROOT / ".env")
 # Add src/ to path so imports work
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -60,8 +65,8 @@ def parse_args():
                         help="Max samples to load/audit (useful for testing)")
     parser.add_argument("--dataset-name", type=str, default=None,
                         help="Custom dataset name")
-    parser.add_argument("--model", type=str, default="gemini-2.5-flash",
-                        help="Gemini model name (default: gemini-2.5-flash)")
+    parser.add_argument("--model", type=str, default="gemini-3-flash-preview",
+                        help="Gemini model name (default: gemini-3-flash-preview)")
     parser.add_argument("--skip-audit", action="store_true",
                         help="Skip VLM audit (just load data and launch App)")
     parser.add_argument("--skip-brain", action="store_true",
@@ -77,6 +82,254 @@ def parse_args():
                         help="Max frames to extract from video")
 
     return parser.parse_args()
+
+
+def _raw_to_accessibility_label(raw_value, field_name=""):
+    """Normalize common GT formats to {'accessible', 'inaccessible'} labels."""
+    lname = (field_name or "").lower()
+
+    if raw_value is None:
+        return None
+
+    if isinstance(raw_value, fo.Classification):
+        raw_value = raw_value.label
+
+    # Booleans can represent either `is_accessible` or `is_inaccessible`
+    if isinstance(raw_value, bool):
+        if "inaccess" in lname or "non_access" in lname or "not_access" in lname:
+            return "inaccessible" if raw_value else "accessible"
+        return "accessible" if raw_value else "inaccessible"
+
+    # Common binary integer encoding
+    if isinstance(raw_value, (int, float)):
+        ivalue = int(raw_value)
+        if ivalue in (0, 1):
+            if "inaccess" in lname or "non_access" in lname or "not_access" in lname:
+                return "inaccessible" if ivalue == 1 else "accessible"
+            return "accessible" if ivalue == 1 else "inaccessible"
+        return None
+
+    if isinstance(raw_value, str):
+        value = raw_value.strip().lower()
+        if not value:
+            return None
+
+        normalized = value.replace("_", " ").replace("-", " ")
+        normalized = re.sub(r"\s+", " ", normalized).strip(" '\".,:;!?()[]{}")
+
+        inaccessible_values = {
+            "0",
+            "false",
+            "no",
+            "inaccessible",
+            "non compliant",
+            "not accessible",
+            "not wheelchair accessible",
+            "wheelchair inaccessible",
+        }
+        accessible_values = {
+            "1",
+            "true",
+            "yes",
+            "accessible",
+            "compliant",
+            "wheelchair accessible",
+        }
+
+        # Use exact normalized labels only; avoid substring matching that can
+        # misclassify free text like video titles.
+        if normalized in inaccessible_values:
+            return "inaccessible"
+
+        if normalized in accessible_values:
+            return "accessible"
+
+    return None
+
+
+def _sample_get(sample, field_name, default=None):
+    """Safely read a sample field without throwing on missing fields."""
+    try:
+        return sample.get_field(field_name)
+    except Exception:
+        return default
+
+
+def _candidate_gt_fields(dataset):
+    system_fields = {
+        "id",
+        "filepath",
+        "tags",
+        "metadata",
+        "created_at",
+        "last_modified_at",
+        "overall_accessible",
+        "accessibility_score",
+        "scene_type",
+        "issues_json",
+        "issue_count",
+        "issue_types",
+        "severity_tags",
+        "audit_status",
+        "pred_accessibility",
+        "gt_accessibility",
+        "accessibility_eval",
+    }
+
+    schema = dataset.get_field_schema()
+    ranked = []
+    for field_name, field in schema.items():
+        if field_name in system_fields or field_name.startswith("_"):
+            continue
+
+        score = 0
+        lname = field_name.lower()
+        field_type = type(field).__name__.lower()
+
+        # Ignore obvious metadata fields (e.g. YouTube source URL/title)
+        if any(k in lname for k in ("source_", "url", "title", "timestamp", "frame_", "eval", "pred_")):
+            continue
+
+        if any(k in lname for k in ("ground_truth", "gt", "label", "target", "access")):
+            score += 3
+        if any(k in field_type for k in ("classification", "boolean", "string", "int", "float")):
+            score += 1
+
+        ranked.append((score, field_name))
+
+    ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    return [name for _, name in ranked]
+
+
+def _detect_gt_field(dataset, probe_size=250):
+    """
+    Detect a field that likely contains binary accessibility GT labels.
+    """
+    candidates = _candidate_gt_fields(dataset)
+    if not candidates:
+        return None, None
+
+    probe_view = dataset.limit(probe_size)
+    best = None
+
+    for field_name in candidates:
+        non_null = 0
+        recognized = 0
+        for sample in probe_view:
+            raw = _sample_get(sample, field_name, default=None)
+            if raw is None:
+                continue
+
+            non_null += 1
+            if _raw_to_accessibility_label(raw, field_name=field_name) is not None:
+                recognized += 1
+
+        if non_null == 0:
+            continue
+
+        ratio = recognized / non_null
+        if recognized == 0:
+            continue
+
+        # Keep only high-signal candidates
+        if ratio < 0.6:
+            continue
+
+        candidate = (recognized, ratio, field_name)
+        if best is None or candidate > best:
+            best = candidate
+
+    if best is None:
+        return None, None
+
+    recognized, ratio, field_name = best
+    return field_name, {"recognized": recognized, "ratio": round(ratio, 3)}
+
+
+def _prepare_eval_fields(dataset, gt_field):
+    """
+    Build normalized classification fields for evaluation:
+      - pred_accessibility: from model output bool `overall_accessible`
+      - gt_accessibility: from detected GT field
+    """
+    pred_field = "pred_accessibility"
+    gt_eval_field = "gt_accessibility"
+
+    pred_count = 0
+    gt_count = 0
+
+    for sample in dataset:
+        pred_bool = _sample_get(sample, "overall_accessible", default=None)
+        if pred_bool is not None:
+            sample[pred_field] = fo.Classification(
+                label="accessible" if bool(pred_bool) else "inaccessible"
+            )
+            pred_count += 1
+
+        gt_label = _raw_to_accessibility_label(
+            _sample_get(sample, gt_field, default=None), field_name=gt_field
+        )
+        if gt_label is not None:
+            sample[gt_eval_field] = fo.Classification(label=gt_label)
+            gt_count += 1
+
+        sample.save()
+
+    return pred_field, gt_eval_field, pred_count, gt_count
+
+
+def run_accessibility_evaluation(dataset):
+    """
+    Evaluate predicted accessibility labels against detected ground truth.
+
+    Returns:
+        dict with metrics, or None if evaluation cannot be performed
+    """
+    gt_field, gt_meta = _detect_gt_field(dataset)
+    if not gt_field:
+        logger.info("No usable accessibility ground-truth field detected; skipping evaluation")
+        return None
+
+    logger.info(
+        "Detected GT field '%s' (recognized=%s, ratio=%s)",
+        gt_field,
+        gt_meta["recognized"],
+        gt_meta["ratio"],
+    )
+
+    pred_field, gt_eval_field, pred_count, gt_count = _prepare_eval_fields(dataset, gt_field)
+    if pred_count == 0:
+        logger.info("No predictions found in `overall_accessible`; skipping evaluation")
+        return None
+    if gt_count == 0:
+        logger.info("No normalized GT labels were derived from '%s'; skipping evaluation", gt_field)
+        return None
+
+    from fiftyone import ViewField as F
+
+    eval_view = dataset.match((F(pred_field) != None) & (F(gt_eval_field) != None))
+    num_eval = len(eval_view)
+    if num_eval == 0:
+        logger.info("No overlapping predictions/ground-truth labels; skipping evaluation")
+        return None
+
+    logger.info("Running evaluation on %d samples...", num_eval)
+    results = eval_view.evaluate_classifications(
+        pred_field,
+        gt_field=gt_eval_field,
+        eval_key="accessibility_eval",
+    )
+    results.print_report(classes=["accessible", "inaccessible"])
+    metrics = results.metrics(classes=["accessible", "inaccessible"], average="macro")
+
+    return {
+        "gt_field": gt_field,
+        "num_eval_samples": num_eval,
+        "accuracy": metrics.get("accuracy"),
+        "precision": metrics.get("precision"),
+        "recall": metrics.get("recall"),
+        "fscore": metrics.get("fscore"),
+    }
 
 
 def main():
@@ -144,20 +397,39 @@ def main():
             import fiftyone.brain as fob
 
             # Similarity index for search
-            fob.compute_similarity(
-                dataset,
-                brain_key="accessibility_sim",
-                model="clip-vit-base32-torch",
-            )
-            logger.info("Similarity index computed")
+            try:
+                fob.compute_similarity(
+                    dataset,
+                    brain_key="accessibility_sim",
+                    model="clip-vit-base32-torch",
+                )
+                logger.info("Similarity index computed")
+            except Exception as e:
+                logger.warning(f"Similarity computation failed (non-fatal): {e}")
 
-            # 2D visualization
-            fob.compute_visualization(
-                dataset,
-                brain_key="accessibility_viz",
-                model="clip-vit-base32-torch",
-            )
-            logger.info("2D visualization computed")
+            # 2D visualization: UMAP first, then fallback to PCA for tiny views
+            try:
+                fob.compute_visualization(
+                    dataset,
+                    brain_key="accessibility_viz",
+                    model="clip-vit-base32-torch",
+                )
+                logger.info("2D visualization computed (UMAP)")
+            except Exception as e:
+                logger.warning(
+                    "UMAP visualization failed (non-fatal): %s. Falling back to PCA...",
+                    e,
+                )
+                try:
+                    fob.compute_visualization(
+                        dataset,
+                        brain_key="accessibility_viz_pca",
+                        model="clip-vit-base32-torch",
+                        method="pca",
+                    )
+                    logger.info("2D visualization computed (PCA fallback)")
+                except Exception as pca_e:
+                    logger.warning(f"PCA visualization fallback failed (non-fatal): {pca_e}")
 
         except Exception as e:
             logger.warning(f"Brain computation failed (non-fatal): {e}")
@@ -166,20 +438,31 @@ def main():
         logger.info("STEP 3: Skipped (--skip-brain)")
 
     # =========================================================================
-    # STEP 4: Evaluate (Rotterdam dataset only)
+    # STEP 4: Evaluate (when compatible ground truth exists)
     # =========================================================================
-    # TODO: Implement evaluation against Rotterdam ground truth labels
-    # The Rotterdam dataset has binary accessible/inaccessible labels.
-    # Compare our overall_accessible predictions against their labels.
-    #
-    # Example:
-    # results = dataset.evaluate_classifications(
-    #     "predicted_accessible",
-    #     gt_field="label",  # check actual field name in dataset
-    #     eval_key="accessibility_eval"
-    # )
-    # results.print_report()
-    logger.info("STEP 4: Evaluation — TODO (implement once field names are confirmed)")
+    logger.info("=" * 60)
+    logger.info("STEP 4: Running evaluation (if GT is available)")
+    logger.info("=" * 60)
+
+    try:
+        eval_stats = run_accessibility_evaluation(dataset)
+        if eval_stats is None:
+            logger.info("STEP 4: Skipped (no compatible GT/prediction labels found)")
+        else:
+            logger.info(
+                "Evaluation complete on %d samples | "
+                "accuracy=%.4f precision=%.4f recall=%.4f fscore=%.4f | gt_field=%s",
+                eval_stats["num_eval_samples"],
+                eval_stats["accuracy"],
+                eval_stats["precision"],
+                eval_stats["recall"],
+                eval_stats["fscore"],
+                eval_stats["gt_field"],
+            )
+            dataset.info["evaluation_stats"] = eval_stats
+            dataset.save()
+    except Exception as e:
+        logger.warning(f"STEP 4 evaluation failed (non-fatal): {e}")
 
     # =========================================================================
     # STEP 5: Generate report

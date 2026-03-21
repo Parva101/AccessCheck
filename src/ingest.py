@@ -6,10 +6,50 @@ Functions to load datasets from various sources into FiftyOne.
 
 import os
 import logging
+import importlib.util
+from pathlib import Path
 
 import fiftyone as fo
 
 logger = logging.getLogger(__name__)
+_VIDEO_SAMPLER_MODULE = None
+
+
+def _load_video_sampler_module():
+    """
+    Dynamically load the local `plugins/video-sampler/__init__.py` module.
+
+    The plugin folder uses a hyphen, so it cannot be imported via a normal
+    dotted Python package path.
+    """
+    global _VIDEO_SAMPLER_MODULE
+
+    if _VIDEO_SAMPLER_MODULE is not None:
+        return _VIDEO_SAMPLER_MODULE
+
+    plugin_init = (
+        Path(__file__).resolve().parent.parent
+        / "plugins"
+        / "video-sampler"
+        / "__init__.py"
+    )
+    if not plugin_init.is_file():
+        raise FileNotFoundError(
+            f"Could not locate video-sampler plugin module at: {plugin_init}"
+        )
+
+    spec = importlib.util.spec_from_file_location(
+        "accesscheck_video_sampler", str(plugin_init)
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(
+            f"Failed to create import spec for video-sampler module: {plugin_init}"
+        )
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _VIDEO_SAMPLER_MODULE = module
+    return module
 
 
 def load_rotterdam_dataset(max_samples=None, dataset_name="rotterdam-accessibility"):
@@ -85,8 +125,14 @@ def load_from_youtube(youtube_url, dataset_name="youtube-property-tour", **kwarg
     """
     import tempfile
 
-    # Import from our plugin
-    from plugins.video_sampler import download_youtube_video, extract_frames
+    video_sampler = _load_video_sampler_module()
+    download_youtube_video = getattr(video_sampler, "download_youtube_video", None)
+    extract_frames = getattr(video_sampler, "extract_frames", None)
+    if download_youtube_video is None or extract_frames is None:
+        raise ImportError(
+            "video-sampler plugin module is missing `download_youtube_video` "
+            "and/or `extract_frames` functions"
+        )
 
     download_dir = tempfile.mkdtemp(prefix="accesscheck_")
 
