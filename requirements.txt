@@ -2,21 +2,30 @@
 # AccessCheck — Python Dependencies
 # =============================================================================
 
-# Core
-fiftyone
+# Web server
+fastapi
+uvicorn[standard]
+python-dotenv
+python-multipart
 
 # VLM (Gemini)
 google-genai
 
-# Video Sampler plugin deps
+# Video Sampler deps
 yt-dlp
 opencv-python
 imagehash
 Pillow
 numpy
 
-# Brain embeddings (CLIP)
-torch
-ftfy
-regex
-open-clip-torch
+# Rotterdam dataset (HuggingFace download)
+huggingface_hub
+
+# Optional: FiftyOne (for full pipeline / FiftyOne App exploration)
+# fiftyone
+
+# Optional: Brain embeddings (CLIP)
+# torch
+# ftfy
+# regex
+# open-clip-torch

@@ -124,48 +124,120 @@ def _parse_gemini_response(response):
     return json.loads(text)
 
 
-def audit_single_image(image_path, model_name="gemini-2.5-flash"):
+class RateLimitError(Exception):
+    """Raised when Gemini API rate limit is hit."""
+    def __init__(self, retry_after=60):
+        self.retry_after = retry_after
+        super().__init__(f"Rate limit exceeded. Retry after {retry_after}s.")
+
+
+def audit_single_image(image_path, model_name="gemini-2.5-flash", max_retries=2):
     """
     Send a single image to Gemini for accessibility audit.
 
     Args:
         image_path: path to the image file
         model_name: Gemini model to use
+        max_retries: number of retries on JSON parse failure
 
     Returns:
         dict with parsed audit results, or None on failure
+
+    Raises:
+        RateLimitError: when Gemini API quota is exhausted
     """
-    try:
-        client = _get_gemini_client()
-        image_part = _build_image_part(image_path)
+    for attempt in range(max_retries + 1):
+        try:
+            client = _get_gemini_client()
+            image_part = _build_image_part(image_path)
 
-        response = client.models.generate_content(
-            model=model_name,
-            contents=[ACCESSIBILITY_AUDIT_PROMPT, image_part],
-            config=types.GenerateContentConfig(
-                temperature=0.1,
-                max_output_tokens=2048,
-                response_mime_type="application/json",
-                response_json_schema=AUDIT_RESPONSE_JSON_SCHEMA,
-            ),
-        )
+            response = client.models.generate_content(
+                model=model_name,
+                contents=[ACCESSIBILITY_AUDIT_PROMPT, image_part],
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    max_output_tokens=4096,
+                    response_mime_type="application/json",
+                    response_json_schema=AUDIT_RESPONSE_JSON_SCHEMA,
+                ),
+            )
 
-        result = _parse_gemini_response(response)
-        if not isinstance(result, dict):
-            raise ValueError(f"Expected dict result, got {type(result)}")
+            result = _parse_gemini_response(response)
+            if not isinstance(result, dict):
+                raise ValueError(f"Expected dict result, got {type(result)}")
 
-        issues = result.get("issues")
-        if not isinstance(issues, list):
-            result["issues"] = []
+            issues = result.get("issues")
+            if not isinstance(issues, list):
+                result["issues"] = []
 
-        return result
+            return result
 
-    except json.JSONDecodeError as e:
-        logger.warning(f"Failed to parse JSON for {image_path}: {e}")
+        except json.JSONDecodeError as e:
+            logger.warning(f"JSON parse error for {image_path} (attempt {attempt+1}): {e}")
+            if attempt < max_retries:
+                time.sleep(0.5)
+                continue
+            # Last attempt: try to salvage truncated JSON
+            try:
+                raw = _clean_json_text(getattr(response, "text", ""))
+                result = _repair_truncated_json(raw)
+                if result:
+                    return result
+            except Exception:
+                pass
+            logger.error(f"Failed to parse JSON for {image_path} after {max_retries+1} attempts")
+            return None
+        except Exception as e:
+            error_str = str(e)
+            # Detect rate limiting and propagate it so the server can inform the user
+            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                retry_after = 60
+                # Try to parse retry delay from error message
+                import re
+                match = re.search(r"retry\s*in\s*([\d.]+)", error_str, re.IGNORECASE)
+                if match:
+                    retry_after = int(float(match.group(1))) + 1
+                raise RateLimitError(retry_after)
+            logger.error(f"Error auditing {image_path}: {e}", exc_info=True)
+            return None
+
+    return None
+
+
+def _repair_truncated_json(raw):
+    """
+    Attempt to salvage a truncated JSON response from Gemini.
+    Tries to close open strings, arrays, and objects.
+    """
+    if not raw:
         return None
-    except Exception as e:
-        logger.warning(f"Error auditing {image_path}: {e}")
-        return None
+
+    # Try to find the last complete issue in the issues array
+    # by closing off the JSON at a reasonable point
+    attempts = [
+        raw + '}]}',
+        raw + '"}]}',
+        raw + '"}]}'  ,
+        raw + '"]}}',
+    ]
+
+    # Also try truncating to last complete issue
+    last_brace = raw.rfind('},')
+    if last_brace > 0:
+        attempts.insert(0, raw[:last_brace + 1] + ']}')
+
+    for fixed in attempts:
+        try:
+            result = json.loads(fixed)
+            if isinstance(result, dict) and "accessibility_score" in result:
+                logger.info("Successfully repaired truncated JSON response")
+                if not isinstance(result.get("issues"), list):
+                    result["issues"] = []
+                return result
+        except (json.JSONDecodeError, Exception):
+            continue
+
+    return None
 
 
 def audit_dataset(
