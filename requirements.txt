@@ -6,13 +6,14 @@
 fiftyone
 
 # VLM (Gemini)
-google-generativeai
+google-genai
 
 # Video Sampler plugin deps
 yt-dlp
 opencv-python
 imagehash
 Pillow
+numpy
 
 # Brain embeddings (CLIP)
 torch
