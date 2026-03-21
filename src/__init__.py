@@ -1,0 +1,3 @@
+"""
+AccessCheck — src package init
+"""

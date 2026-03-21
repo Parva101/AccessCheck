@@ -1,0 +1,15 @@
+name: "@accesscheck/video-sampler"
+version: 1.0.0
+author: AccessCheck Team
+description: >
+  Smart video-to-dataset converter. Downloads YouTube videos or loads local
+  video files and extracts frames using intelligent sampling strategies
+  (scene-change detection, perceptual deduplication, uniform interval,
+  or hybrid). Creates a FiftyOne image dataset with source metadata.
+url: https://github.com/Parva101/AccessCheck
+license: Apache-2.0
+fiftyone:
+  version: "*"
+operators:
+  - sample_from_youtube
+  - sample_from_video

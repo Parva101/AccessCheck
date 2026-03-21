@@ -1,0 +1,21 @@
+# =============================================================================
+# AccessCheck — Python Dependencies
+# =============================================================================
+
+# Core
+fiftyone
+
+# VLM (Gemini)
+google-generativeai
+
+# Video Sampler plugin deps
+yt-dlp
+opencv-python
+imagehash
+Pillow
+
+# Brain embeddings (CLIP)
+torch
+ftfy
+regex
+open-clip-torch

@@ -415,29 +415,26 @@ dataset = fouh.load_from_hub("segments/sidewalk-semantic")
 
 ---
 
-## Task Division (2 people, ~4 hours)
+## Build Tasks (divide as you see fit)
 
-### Person A: Plugin + Data Pipeline
-| Time | Task |
-|---|---|
-| 10:30-11:30 | Set up environment: `pip install fiftyone`, download existing plugins, get Gemini API key |
-| 11:30-1:00 | Build `video-sampler` plugin: `fiftyone.yml` + `__init__.py` with both operators. Test with a YouTube video |
-| 1:00-1:30 | Lunch + watch Gemini talk |
-| 1:30-2:30 | Write `ingest.py` — load Rotterdam dataset, test YouTube pipeline end-to-end |
-| 2:30-3:30 | Integrate: make sure video-sampler output feeds smoothly into the audit pipeline |
-| 3:30-4:00 | Help Person B with demo polish, write plugin README |
-| 4:00-5:00 | Presentation slides (4-6 slides), final testing, push to GitHub |
+### All tasks — roughly in priority order:
 
-### Person B: AI Agent + Scoring + Demo
-| Time | Task |
-|---|---|
-| 10:30-11:30 | Set up environment: `pip install fiftyone`, set up Gemini API key, test basic Gemini call |
-| 11:30-1:00 | Write `prompts.py` — craft and test the accessibility audit prompt. Iterate until Gemini returns good structured JSON |
-| 1:00-1:30 | Lunch + watch Gemini talk |
-| 1:30-2:30 | Write `demo.py` — the main orchestration script. Get it working on Rotterdam dataset |
-| 2:30-3:30 | Write `scoring.py` — aggregation, scoring, report. Add Brain embeddings + evaluation |
-| 3:30-4:00 | Polish demo flow, handle edge cases (VLM returns bad JSON, etc.) |
-| 4:00-5:00 | Presentation slides (4-6 slides), rehearse demo, push to GitHub |
+| # | Task | Estimated Time | Dependencies |
+|---|---|---|---|
+| 1 | **Environment setup** — `pip install fiftyone`, download existing plugins, get Gemini API key, install deps (`yt-dlp`, `opencv-python`, `imagehash`) | 30 min | None |
+| 2 | **Build `video-sampler` plugin** — `fiftyone.yml` + `__init__.py` with `sample_from_youtube` and `sample_from_video` operators. Scene-change detection, perceptual dedup, metadata storage | 1.5 hours | Task 1 |
+| 3 | **Write `prompts.py`** — Craft and iterate on the accessibility audit prompt until Gemini returns clean structured JSON | 1 hour | Task 1 |
+| 4 | **Write `ingest.py`** — Dataset loading helpers: Rotterdam from HuggingFace, YouTube via video-sampler, local images | 30 min | Task 1 |
+| 5 | **Write `demo.py`** — Main orchestration script: load data → run VLM audit on each sample → parse JSON → store fields → compute Brain embeddings → evaluate → generate report → launch App | 1.5 hours | Tasks 3, 4 |
+| 6 | **Write `scoring.py`** — Aggregation logic: weighted accessibility score (0-100), issue counts by type/severity, top-5 worst, remediation priority ranking | 45 min | Task 5 |
+| 7 | **Integration testing** — End-to-end: YouTube URL → frames → audit → score → App | 30 min | Tasks 2, 5, 6 |
+| 8 | **Presentation slides** — 4-6 slides: problem, solution, live demo, architecture, impact | 30 min | Task 7 |
+| 9 | **README + GitHub push** — Project README with screenshots, install instructions, demo GIF | 30 min | Task 7 |
+
+### What can be done in parallel:
+- Task 2 (plugin) and Task 3 (prompts) have no dependency on each other
+- Task 4 (ingest) can be done alongside Task 3
+- Everything else is sequential
 
 ---
 
