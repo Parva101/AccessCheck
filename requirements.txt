@@ -1,19 +1,29 @@
 # =============================================================================
-# AccessCheck — Python Dependencies
+# AccessCheck - Python Dependencies
 # =============================================================================
 
-# Core
+# Core platform
 fiftyone
+
+# Web server (frontend/backend integration)
+fastapi
+uvicorn[standard]
+python-dotenv
+python-multipart
 
 # VLM (Gemini)
 google-genai
+json-repair
 
-# Video Sampler plugin deps
+# Video sampler deps
 yt-dlp
 opencv-python
 imagehash
 Pillow
 numpy
+
+# Datasets
+huggingface_hub
 
 # Brain embeddings (CLIP)
 torch
@@ -21,6 +31,3 @@ ftfy
 regex
 open-clip-torch
 umap-learn
-
-python-dotenv
-json-repair

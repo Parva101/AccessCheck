@@ -24,47 +24,6 @@ export const ROTTERDAM_SAMPLES = [
   { id: 6, name: "RTM — 0512", label: "accessible",   scene: "Sidewalk", img: "https://images.unsplash.com/photo-1477959858617-67f85cf4f1df?w=400&q=75" },
 ];
 
-/* ── Mock audit result (replace with real API response) ───────────────────── */
-export const MOCK_RESULT = {
-  overall_score: 37,
-  scene_type: "Entrance",
-  overall_accessible: false,
-  issues: [
-    {
-      issue_type: "Stairs Only Access",
-      severity: "critical",
-      description: "No ramp at main entrance — stairs completely block wheelchair access.",
-      location_in_image: "Center entrance",
-      remediation: "Install a compliant ramp with 1:12 slope ratio alongside existing stairs.",
-      ada_reference: "ADA 405.2 — Ramp Slope",
-    },
-    {
-      issue_type: "Narrow Doorway",
-      severity: "critical",
-      description: "Door width appears under 32 inches, below minimum ADA clearance.",
-      location_in_image: "Main doorway",
-      remediation: 'Replace with minimum 32" clear width door; 36" recommended.',
-      ada_reference: "ADA 404.2.3 — Door Width",
-    },
-    {
-      issue_type: "No Grab Bars",
-      severity: "major",
-      description: "No grab bars visible near stair entry or adjacent restroom area.",
-      location_in_image: "Left staircase",
-      remediation: "Install graspable handrails on both sides per ADA specification.",
-      ada_reference: "ADA 505 — Handrails",
-    },
-    {
-      issue_type: "Poor Lighting",
-      severity: "minor",
-      description: "Insufficient lighting at entrance threshold — below 5 foot-candles.",
-      location_in_image: "Entrance threshold",
-      remediation: "Add exterior lighting to meet minimum 5 fc requirement.",
-      ada_reference: "ADA Advisory 206.2.4",
-    },
-  ],
-};
-
 /* ── Pipeline steps shown on YouTube tab ──────────────────────────────────── */
 export const PIPELINE_STEPS = [
   { title: "Download",      desc: "yt-dlp fetches the video stream and metadata" },

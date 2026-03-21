@@ -9,6 +9,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import time
 
 from google import genai
@@ -60,6 +61,14 @@ AUDIT_RESPONSE_JSON_SCHEMA = {
         },
     },
 }
+
+
+class RateLimitError(Exception):
+    """Raised when Gemini API rate limit is hit."""
+
+    def __init__(self, retry_after=60):
+        self.retry_after = retry_after
+        super().__init__(f"Rate limit exceeded. Retry after {retry_after}s.")
 
 
 def configure_gemini(api_key=None):
@@ -143,6 +152,37 @@ def _extract_first_json_object(text):
     return text[start:]
 
 
+def _repair_truncated_json(raw):
+    """
+    Attempt to salvage a truncated JSON response from Gemini.
+    """
+    if not raw:
+        return None
+
+    attempts = [
+        raw + '}]}',
+        raw + '"}]}',
+        raw + '"}]}',
+        raw + '"]}}',
+    ]
+
+    last_brace = raw.rfind('},')
+    if last_brace > 0:
+        attempts.insert(0, raw[: last_brace + 1] + ']}')
+
+    for fixed in attempts:
+        try:
+            result = json.loads(fixed)
+            if isinstance(result, dict):
+                if not isinstance(result.get("issues"), list):
+                    result["issues"] = []
+                return result
+        except Exception:
+            continue
+
+    return None
+
+
 def _loads_json_robust(text):
     """
     Parse JSON with safe fallbacks for malformed model outputs.
@@ -164,8 +204,6 @@ def _loads_json_robust(text):
             last_error = e
 
     if repair_json is not None:
-        # Last-resort repair for minor JSON formatting issues such as
-        # unescaped quotes or trailing commas.
         for candidate in candidates:
             try:
                 repaired = repair_json(candidate, return_objects=True)
@@ -173,6 +211,10 @@ def _loads_json_robust(text):
                     return repaired
             except Exception:
                 pass
+
+    repaired = _repair_truncated_json(candidates[0])
+    if repaired is not None:
+        return repaired
 
     if last_error is not None:
         raise last_error
@@ -196,7 +238,6 @@ def _parse_gemini_response(response):
         return parsed
 
     if parsed is not None:
-        # Some schemas may produce non-dict parsed output
         if isinstance(parsed, str):
             return _loads_json_robust(parsed)
         return parsed
@@ -233,46 +274,84 @@ def _normalize_audit_result(result):
     return normalized
 
 
-def audit_single_image(image_path, model_name="gemini-3-flash-preview"):
+def audit_single_image(image_path, model_name="gemini-3-flash-preview", max_retries=2):
     """
     Send a single image to Gemini for accessibility audit.
 
     Args:
         image_path: path to the image file
         model_name: Gemini model to use
+        max_retries: number of retries on JSON parse failure
 
     Returns:
         dict with parsed audit results, or None on failure
+
+    Raises:
+        RateLimitError: when Gemini API quota is exhausted
     """
-    try:
-        client = _get_gemini_client()
-        image_part = _build_image_part(image_path)
+    response = None
 
-        response = client.models.generate_content(
-            model=model_name,
-            contents=[ACCESSIBILITY_AUDIT_PROMPT, image_part],
-            config=types.GenerateContentConfig(
-                temperature=0.0,
-                max_output_tokens=4096,
-                response_mime_type="application/json",
-                response_schema=AUDIT_RESPONSE_JSON_SCHEMA,
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                    disable=True
+    for attempt in range(max_retries + 1):
+        try:
+            client = _get_gemini_client()
+            image_part = _build_image_part(image_path)
+
+            response = client.models.generate_content(
+                model=model_name,
+                contents=[ACCESSIBILITY_AUDIT_PROMPT, image_part],
+                config=types.GenerateContentConfig(
+                    temperature=0.0,
+                    max_output_tokens=4096,
+                    response_mime_type="application/json",
+                    response_schema=AUDIT_RESPONSE_JSON_SCHEMA,
+                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                        disable=True
+                    ),
                 ),
-            ),
-        )
+            )
 
-        result = _parse_gemini_response(response)
-        return _normalize_audit_result(result)
+            result = _parse_gemini_response(response)
+            return _normalize_audit_result(result)
 
-    except json.JSONDecodeError as e:
-        raw_text = _clean_json_text(getattr(locals().get("response"), "text", ""))
-        snippet = raw_text[:240].replace("\n", " ")
-        logger.warning(f"Failed to parse JSON for {image_path}: {e} | snippet={snippet!r}")
-        return None
-    except Exception as e:
-        logger.warning(f"Error auditing {image_path}: {e}")
-        return None
+        except json.JSONDecodeError as e:
+            logger.warning(
+                "JSON parse error for %s (attempt %d/%d): %s",
+                image_path,
+                attempt + 1,
+                max_retries + 1,
+                e,
+            )
+            if attempt < max_retries:
+                time.sleep(0.5)
+                continue
+
+            raw_text = _clean_json_text(getattr(response, "text", ""))
+            repaired = _repair_truncated_json(raw_text)
+            if repaired is not None:
+                logger.info("Recovered truncated Gemini JSON for %s", image_path)
+                return _normalize_audit_result(repaired)
+
+            snippet = raw_text[:240].replace("\n", " ")
+            logger.warning(
+                "Failed to parse JSON for %s after retries | snippet=%r",
+                image_path,
+                snippet,
+            )
+            return None
+
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                retry_after = 60
+                match = re.search(r"retry\s*in\s*([\d.]+)", error_str, re.IGNORECASE)
+                if match:
+                    retry_after = int(float(match.group(1))) + 1
+                raise RateLimitError(retry_after)
+
+            logger.warning(f"Error auditing {image_path}: {e}")
+            return None
+
+    return None
 
 
 def audit_dataset(
@@ -312,13 +391,30 @@ def audit_dataset(
     total = len(view)
     success_count = 0
     fail_count = 0
+    processed = 0
+    rate_limited = False
+    retry_after_sec = None
 
     logger.info(f"Starting accessibility audit on {total} samples...")
 
     for i, sample in enumerate(view, 1):
+        processed = i
         logger.info(f"Auditing sample {i}/{total}: {sample.filepath}")
 
-        result = audit_single_image(sample.filepath, model_name=model_name)
+        try:
+            result = audit_single_image(sample.filepath, model_name=model_name)
+        except RateLimitError as e:
+            logger.warning(
+                "Rate limit reached while auditing %s (retry_after=%ss)",
+                sample.filepath,
+                e.retry_after,
+            )
+            sample["audit_status"] = "rate_limited"
+            sample.save()
+            fail_count += 1
+            rate_limited = True
+            retry_after_sec = e.retry_after
+            break
 
         if result:
             sample["accessibility_score"] = result.get("accessibility_score")
@@ -335,7 +431,6 @@ def audit_dataset(
             )
             sample["audit_status"] = "success"
 
-            # Add severity-based tags
             for severity in sample["severity_tags"]:
                 sample.tags.append(severity)
             if result.get("overall_accessible"):
@@ -350,7 +445,6 @@ def audit_dataset(
 
         sample.save()
 
-        # Rate limiting
         if delay_between_calls > 0 and i < total:
             time.sleep(delay_between_calls)
 
@@ -358,6 +452,9 @@ def audit_dataset(
 
     return {
         "total": total,
+        "processed": processed,
         "success": success_count,
         "failed": fail_count,
+        "rate_limited": rate_limited,
+        "retry_after_sec": retry_after_sec,
     }

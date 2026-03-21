@@ -29,6 +29,9 @@ dist/
 # FiftyOne
 .fiftyone/
 
+# Rotterdam dataset cache
+.cache/
+
 # Temp files from video-sampler
 video_sampler_*/
 accesscheck_*/

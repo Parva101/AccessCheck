@@ -16,6 +16,7 @@ export default function DatasetTab({ onResult }) {
       onResult(result, sample.name);
     } catch (e) {
       console.error(e);
+      alert(e.message || "Audit failed");
     } finally {
       setLoading(false);
     }

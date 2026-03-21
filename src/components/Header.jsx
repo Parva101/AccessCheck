@@ -1,4 +1,27 @@
+import { useState, useEffect } from "react";
+
 export default function Header() {
+  const [backendUp, setBackendUp] = useState(false);
+  const [geminiOk, setGeminiOk] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/health")
+      .then((r) => r.json())
+      .then((data) => {
+        setBackendUp(true);
+        setGeminiOk(data.gemini_configured);
+      })
+      .catch(() => {
+        setBackendUp(false);
+        setGeminiOk(false);
+      });
+  }, []);
+
+  const pills = [
+    ["Gemini", geminiOk ? "var(--green)" : "var(--red)"],
+    ["Backend", backendUp ? "var(--green)" : "var(--red)"],
+  ];
+
   return (
     <header style={{
       position: "sticky", top: 0, zIndex: 50,
@@ -35,7 +58,7 @@ export default function Header() {
 
         {/* Status pills */}
         <div style={{ display: "flex", gap: 6 }}>
-          {[["Gemini", "var(--green)"], ["FiftyOne", "var(--green)"]].map(([label, color]) => (
+          {pills.map(([label, color]) => (
             <div key={label} style={{
               display: "flex", alignItems: "center", gap: 5,
               background: "var(--raised)", border: "1px solid var(--border)",

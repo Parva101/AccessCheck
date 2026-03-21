@@ -24,7 +24,7 @@ export default function YouTubeTab({ onResult }) {
       const result = await auditYouTube(trimmed);
       onResult(result, trimmed);
     } catch (e) {
-      setErr("Audit failed — check the console for details.");
+      setErr(e.message || "Audit failed — check the console for details.");
       console.error(e);
     } finally {
       setLoading(false);
