@@ -3,12 +3,12 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.egg-info/
-dist/
 build/
 *.egg
 
 # Environment
 .env
+.env.local
 .venv/
 venv/
 
@@ -20,6 +20,11 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Node / frontend
+node_modules/
+dist/
+*.log
 
 # FiftyOne
 .fiftyone/
