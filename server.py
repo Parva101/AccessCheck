@@ -176,7 +176,7 @@ def _download_youtube_video(url, output_dir):
     return video_path, metadata
 
 
-def _extract_frames(video_path, output_dir, max_frames=8, interval_seconds=3.0,
+def _extract_frames(video_path, output_dir, max_frames=50, interval_seconds=3.0,
                     scene_threshold=0.3):
     """
     Extract key frames from video using hybrid strategy.
@@ -379,10 +379,10 @@ async def audit_youtube(req: YouTubeRequest):
         video_path, meta = _download_youtube_video(url, tmp_dir)
         logger.info(f"Downloaded: {meta['title']} ({meta['duration_sec']}s)")
 
-        # Step 2: Extract frames (limit to 8 for speed)
+        # Step 2: Extract frames (default cap: 50)
         frames_dir = os.path.join(tmp_dir, "frames")
         logger.info("Extracting frames...")
-        frame_paths = _extract_frames(video_path, frames_dir, max_frames=8)
+        frame_paths = _extract_frames(video_path, frames_dir, max_frames=50)
         logger.info(f"Extracted {len(frame_paths)} frames")
 
         # Step 3: Audit each frame with Gemini
