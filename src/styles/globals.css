@@ -1,0 +1,102 @@
+/* ── Reset & Root ──────────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg:        #0e0e10;
+  --surface:   #16161a;
+  --raised:    #1c1c21;
+  --border:    #2a2a32;
+  --border-l:  #32323c;
+  --text:      #e8e8f0;
+  --muted:     #7070a0;
+  --subtle:    #404058;
+  --accent:    #6e6bff;
+  --accent-d:  #4e4bd0;
+  --green:     #34d399;
+  --red:       #f87171;
+  --amber:     #fbbf24;
+  --radius:    10px;
+  --font-sans: 'Sora', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+html {
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  min-height: 100vh;
+}
+
+::selection {
+  background: #6e6bff33;
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-l);
+  border-radius: 4px;
+}
+
+input, button, textarea, select {
+  font-family: var(--font-sans);
+}
+
+input::placeholder {
+  color: var(--subtle);
+}
+
+input:focus {
+  outline: none;
+}
+
+button {
+  cursor: pointer;
+}
+
+/* ── Animations ────────────────────────────────────────────────────────────── */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0);     }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes count-up {
+  from { opacity: 0; transform: scale(0.85); }
+  to   { opacity: 1; transform: scale(1);     }
+}
+
+/* ── Utility classes ───────────────────────────────────────────────────────── */
+.fade-up {
+  animation: fade-up 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.fade-in {
+  animation: fade-in 0.3s ease both;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}

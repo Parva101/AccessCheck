@@ -14,6 +14,13 @@ from prompts import SEVERITY_WEIGHTS
 logger = logging.getLogger(__name__)
 
 
+def _sample_get(sample, field_name, default=None):
+    try:
+        return sample.get_field(field_name)
+    except Exception:
+        return default
+
+
 def compute_accessibility_report(dataset):
     """
     Aggregate all accessibility audit results from a FiftyOne dataset
@@ -35,29 +42,29 @@ def compute_accessibility_report(dataset):
     worst_samples = []
 
     for sample in dataset:
-        if sample.get("audit_status") != "success":
+        if _sample_get(sample, "audit_status") != "success":
             continue
 
-        score = sample.get("accessibility_score")
+        score = _sample_get(sample, "accessibility_score")
         if score is not None:
             scores.append(score)
             worst_samples.append({
                 "filepath": sample.filepath,
                 "score": score,
-                "scene_type": sample.get("scene_type", "unknown"),
-                "issue_count": sample.get("issue_count", 0),
+                "scene_type": _sample_get(sample, "scene_type", "unknown"),
+                "issue_count": _sample_get(sample, "issue_count", 0),
             })
 
-        if sample.get("overall_accessible"):
+        if _sample_get(sample, "overall_accessible"):
             accessible_count += 1
         else:
             inaccessible_count += 1
 
-        scene = sample.get("scene_type", "unknown")
+        scene = _sample_get(sample, "scene_type", "unknown")
         scene_type_counts[scene] += 1
 
         # Parse issues
-        issues_json = sample.get("issues_json", "[]")
+        issues_json = _sample_get(sample, "issues_json", "[]")
         try:
             issues = json.loads(issues_json) if issues_json else []
         except json.JSONDecodeError:
